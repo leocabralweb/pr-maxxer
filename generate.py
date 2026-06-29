@@ -116,6 +116,13 @@ def main():
 
     raw_prs = fetch_prs(range_start)
 
+    exclude_owners = set(config.get("excludeOwners", []))
+    if exclude_owners:
+        raw_prs = [
+            pr for pr in raw_prs
+            if pr["repository"]["nameWithOwner"].split("/")[0] not in exclude_owners
+        ]
+
     # Group PRs by local merge date (closedAt is the merge time for merged PRs).
     prs_by_date = {}
     for pr in raw_prs:
