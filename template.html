@@ -19,6 +19,8 @@
     --weekend: #10151c;
     --holiday: #3d1d0e;
     --vacation: #2d2440;
+    --done: #8957e5;
+    --validation: #d29922;
   }
   * { box-sizing: border-box; }
   body {
@@ -34,7 +36,7 @@
 
   .stats {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(3, 1fr);
     gap: 12px;
     margin-bottom: 28px;
   }
@@ -94,7 +96,7 @@
   .cell.vacation { background: var(--vacation); }
   .cell.today { outline: 2px solid var(--accent); outline-offset: -1px; }
   .cell.haspr { cursor: pointer; }
-  .cell.haspr:hover { border-color: var(--accent); }
+  .cell.haspr:hover, .cell.hasitems:hover { border-color: var(--accent); }
 
   .daynum { font-size: 12px; color: var(--muted); }
   .cell.today .daynum { color: var(--accent); font-weight: 700; }
@@ -114,6 +116,10 @@
   .badge.l2 { background: var(--green-2); }
   .badge.l3 { background: var(--green-3); color: #052e16; }
   .badge.l4 { background: var(--green-4); color: #052e16; }
+  .badges { margin-top: auto; display: flex; flex-wrap: wrap; gap: 3px; }
+  .badges .badge { margin-top: 0; }
+  .badge.done { background: var(--done); }
+  .badge.validation { background: var(--validation); color: #2b1d00; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 18px; font-size: 12px; color: var(--muted); }
   .legend .item { display: flex; align-items: center; gap: 6px; }
@@ -122,6 +128,8 @@
   .sw-holiday { background: var(--holiday); }
   .sw-vacation { background: var(--vacation); }
   .sw-pr { background: var(--green-3); }
+  .sw-done { background: var(--done); }
+  .sw-validation { background: var(--validation); }
 
   .tooltip {
     position: absolute;
@@ -139,7 +147,9 @@
     display: none;
     box-shadow: 0 4px 16px rgba(0,0,0,.5);
   }
-  .cell.haspr:hover .tooltip { display: block; }
+  .cell.hasitems:hover .tooltip { display: block; }
+  .tooltip .section { color: var(--muted); text-transform: uppercase; font-size: 9px; letter-spacing: .04em; margin: 6px 0 3px; }
+  .tooltip .section:first-child { margin-top: 0; }
   .tooltip .pr { margin-bottom: 4px; }
   .tooltip .pr:last-child { margin-bottom: 0; }
   .tooltip .repo { color: var(--muted); }
@@ -165,6 +175,8 @@
 
   <div class="legend">
     <div class="item"><span class="swatch sw-pr"></span> merged PRs (click day to view on GitHub)</div>
+    <div class="item linear-only"><span class="swatch sw-done"></span> Linear done</div>
+    <div class="item linear-only"><span class="swatch sw-validation"></span> Linear moved to validation</div>
     <div class="item"><span class="swatch sw-weekend"></span> weekend</div>
     <div class="item"><span class="swatch sw-holiday"></span> holiday</div>
     <div class="item"><span class="swatch sw-vacation"></span> vacation</div>
@@ -230,35 +242,52 @@
     return (a.y * 12 + a.m) - (b.y * 12 + b.m);
   }
 
-  function renderStats() {
-    const o = DATA.stats.overall;
-    const w7 = DATA.stats.last7;
-    const w30 = DATA.stats.last30;
-    const el = document.getElementById("stats");
-    el.innerHTML = `
-      <div class="stat">
-        <div class="label">Last 7 days</div>
-        <div class="value">${w7.prsPerWorkDay}</div>
-        <div class="note">${w7.totalPRs} PRs · ${w7.workDays} work days</div>
-      </div>
-      <div class="stat">
-        <div class="label">Last 30 days</div>
-        <div class="value">${w30.prsPerWorkDay}</div>
-        <div class="note">${w30.totalPRs} PRs · ${w30.workDays} work days</div>
-      </div>
-      <div class="stat">
-        <div class="label">Full range</div>
-        <div class="value">${o.prsPerWorkDay}</div>
-        <div class="note">${o.totalPRs} PRs · ${o.workDays} work days</div>
-      </div>
-    `;
+  const WINDOWS = [
+    ["Last 7 days", DATA.stats.last7],
+    ["Last 30 days", DATA.stats.last30],
+    ["Full range", DATA.stats.overall],
+  ];
+
+  function statCard(label, value, note) {
+    return '<div class="stat"><div class="label">' + label + '</div>' +
+      '<div class="value">' + value + '</div><div class="note">' + note + '</div></div>';
   }
 
-  function tooltipHtml(prs) {
-    return '<div class="tooltip">' + prs.map(function (p) {
+  function renderStats() {
+    const el = document.getElementById("stats");
+    let html = WINDOWS.map(function (w) {
+      return statCard(w[0] + " · PRs", w[1].prsPerWorkDay,
+        w[1].totalPRs + " PRs · " + w[1].workDays + " work days");
+    }).join("");
+    if (DATA.linearEnabled) {
+      html += WINDOWS.map(function (w) {
+        return statCard(w[0] + " · Linear done", w[1].linearDonePerWorkDay,
+          w[1].linearDone + " issues · " + w[1].workDays + " work days");
+      }).join("");
+      html += WINDOWS.map(function (w) {
+        return statCard(w[0] + " · To validation", w[1].linearValidationPerWorkDay,
+          w[1].linearValidation + " issues · " + w[1].workDays + " work days");
+      }).join("");
+    }
+    el.innerHTML = html;
+  }
+
+  function tooltipHtml(prs, linear) {
+    let html = "";
+    function section(title, rows) {
+      if (!rows.length) return;
+      html += '<div class="section">' + title + "</div>" + rows.join("");
+    }
+    section("Merged PRs", prs.map(function (p) {
       return '<div class="pr">#' + p.number + ' ' + escapeHtml(p.title) +
         '<br><span class="repo">' + escapeHtml(p.repo) + '</span></div>';
-    }).join("") + '</div>';
+    }));
+    function issueRow(i) {
+      return '<div class="pr">' + escapeHtml(i.identifier) + ' ' + escapeHtml(i.title) + '</div>';
+    }
+    section("Linear done", linear.done.map(issueRow));
+    section("Moved to validation", linear.validation.map(issueRow));
+    return '<div class="tooltip">' + html + '</div>';
   }
 
   function escapeHtml(s) {
@@ -287,6 +316,8 @@
       const dayIso = iso(d);
       const inRange = d >= rangeStart && d <= rangeEnd;
       const prs = DATA.prsByDate[dayIso] || [];
+      const linear = DATA.linearByDate[dayIso] || { done: [], validation: [] };
+      const hasItems = prs.length || linear.done.length || linear.validation.length;
       const isWeekend = d.getDay() === 0 || d.getDay() === 6;
       const holidayName = DATA.holidays[dayIso];
       const vacLabel = DATA.vacations[dayIso];
@@ -297,15 +328,27 @@
       if (vacLabel) classes.push("vacation");
       if (dayIso === todayIso) classes.push("today");
       if (prs.length) classes.push("haspr");
+      if (hasItems) classes.push("hasitems");
       if (!inRange) classes.push("empty");
 
       let inner = '<div class="daynum">' + day + "</div>";
       if (holidayName) inner += '<div class="tag">' + escapeHtml(holidayName) + "</div>";
       else if (vacLabel) inner += '<div class="tag">' + escapeHtml(vacLabel) + "</div>";
 
-      if (prs.length) {
-        inner += '<span class="badge ' + badgeLevel(prs.length) + '">' + prs.length + "</span>";
-        inner += tooltipHtml(prs);
+      if (hasItems) {
+        inner += '<div class="badges">';
+        if (prs.length) {
+          inner += '<span class="badge ' + badgeLevel(prs.length) + '" title="Merged PRs">' +
+            prs.length + "</span>";
+        }
+        if (linear.done.length) {
+          inner += '<span class="badge done" title="Linear done">' + linear.done.length + "</span>";
+        }
+        if (linear.validation.length) {
+          inner += '<span class="badge validation" title="Moved to validation">' +
+            linear.validation.length + "</span>";
+        }
+        inner += "</div>" + tooltipHtml(prs, linear);
       }
 
       if (prs.length && inRange) {
@@ -341,6 +384,10 @@
   document.getElementById("subtitle").textContent =
     "@" + DATA.login + " · " + DATA.rangeStart + " → " + DATA.rangeEnd +
     " · " + DATA.timezone + " · generated " + DATA.generatedAt;
+
+  if (!DATA.linearEnabled) {
+    document.querySelectorAll(".linear-only").forEach(function (el) { el.remove(); });
+  }
 
   render();
 })();

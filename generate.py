@@ -3,10 +3,11 @@
 # requires-python = ">=3.9"
 # dependencies = ["holidays"]
 # ///
-"""Generate a static HTML dashboard of merged GitHub PRs.
+"""Generate a static HTML dashboard of merged GitHub PRs and Linear issues.
 
-Pulls merged-PR data via the `gh` CLI, groups it by local merge date, computes
-work-day stats, and injects a JSON blob into template.html to produce index.html.
+Pulls merged-PR data via the `gh` CLI and (optionally) Linear issues assigned to you
+via the Linear GraphQL API, groups both by local date, computes work-day stats, and
+injects a JSON blob into template.html to produce index.html.
 
 Usage:
     python3 generate.py
@@ -14,11 +15,15 @@ Usage:
 Requires:
     - `gh` CLI, authenticated (`gh auth status`)
     - the `holidays` package (`pip install -r requirements.txt`)
+    - optional: LINEAR_API_KEY env var (a Linear personal API key) for Linear counts
 """
 
 import json
+import os
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -38,6 +43,7 @@ CONFIG_PATH = HERE / "config.json"
 EXAMPLE_CONFIG_PATH = HERE / "config.example.json"
 TEMPLATE_PATH = HERE / "template.html"
 OUTPUT_PATH = HERE / "index.html"
+LINEAR_API_URL = "https://api.linear.app/graphql"
 
 
 def run(cmd):
@@ -88,6 +94,83 @@ def fetch_prs(range_start):
         "--limit", "1000",
     ])
     return json.loads(out)
+
+
+def linear_query(api_key, query, variables):
+    """POST a GraphQL query to Linear, returning `data`. Exit on errors."""
+    req = urllib.request.Request(
+        LINEAR_API_URL,
+        data=json.dumps({"query": query, "variables": variables}).encode(),
+        headers={"Content-Type": "application/json", "Authorization": api_key},
+    )
+    try:
+        with urllib.request.urlopen(req) as resp:
+            body = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        sys.exit(f"Linear API request failed ({e.code}): {e.read().decode()[:500]}\n"
+                 "Is LINEAR_API_KEY a valid personal API key?")
+    if body.get("errors"):
+        sys.exit(f"Linear API returned errors: {json.dumps(body['errors'])[:500]}")
+    return body["data"]
+
+
+LINEAR_ISSUES_QUERY = """
+query($since: DateTimeOrDuration!, $after: String) {
+  viewer {
+    assignedIssues(first: 50, after: $after, filter: { updatedAt: { gte: $since } }) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id identifier title url completedAt
+        history(first: 50) {
+          pageInfo { hasNextPage endCursor }
+          nodes { createdAt toState { name } }
+        }
+      }
+    }
+  }
+}
+"""
+
+LINEAR_HISTORY_QUERY = """
+query($id: String!, $after: String) {
+  issue(id: $id) {
+    history(first: 100, after: $after) {
+      pageInfo { hasNextPage endCursor }
+      nodes { createdAt toState { name } }
+    }
+  }
+}
+"""
+
+
+def fetch_linear_issues(api_key, range_start):
+    """Fetch issues assigned to the viewer updated since range_start, with full history.
+
+    Any state transition bumps `updatedAt`, so this covers every issue completed or
+    moved to validation within the range.
+    """
+    issues = []
+    after = None
+    while True:
+        data = linear_query(api_key, LINEAR_ISSUES_QUERY,
+                            {"since": range_start.isoformat(), "after": after})
+        conn = data["viewer"]["assignedIssues"]
+        for issue in conn["nodes"]:
+            history = issue["history"]
+            entries = list(history["nodes"])
+            h_after = history["pageInfo"]["endCursor"]
+            h_more = history["pageInfo"]["hasNextPage"]
+            while h_more:
+                h = linear_query(api_key, LINEAR_HISTORY_QUERY,
+                                 {"id": issue["id"], "after": h_after})["issue"]["history"]
+                entries.extend(h["nodes"])
+                h_after = h["pageInfo"]["endCursor"]
+                h_more = h["pageInfo"]["hasNextPage"]
+            issue["history"] = entries
+            issues.append(issue)
+        if not conn["pageInfo"]["hasNextPage"]:
+            return issues
+        after = conn["pageInfo"]["endCursor"]
 
 
 def main():
@@ -145,6 +228,41 @@ def main():
     for prs in prs_by_date.values():
         prs.sort(key=lambda p: p["number"])
 
+    def to_local_date(ts):
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(tz).date()
+
+    # Linear issues assigned to you, bucketed per local date into two independent
+    # counts: "done" (completedAt) and "validation" (moved into the validation state).
+    # An issue can appear in both, on the same or different days.
+    linear_config = config.get("linear", {})
+    linear_key = os.environ.get("LINEAR_API_KEY") or linear_config.get("apiKey")
+    validation_state = linear_config.get("validationState", "In Validation").casefold()
+    linear_by_date = {}  # "YYYY-MM-DD" -> {"done": [...], "validation": [...]}
+    if linear_key:
+        for issue in fetch_linear_issues(linear_key, range_start):
+            ref = {"identifier": issue["identifier"], "title": issue["title"],
+                   "url": issue["url"]}
+            hits = set()
+            if issue.get("completedAt"):
+                hits.add(("done", to_local_date(issue["completedAt"])))
+            for h in issue["history"]:
+                to_state = (h.get("toState") or {}).get("name", "")
+                if to_state.casefold() == validation_state:
+                    hits.add(("validation", to_local_date(h["createdAt"])))
+            for kind, local_date in hits:
+                if range_start <= local_date <= range_end:
+                    day = linear_by_date.setdefault(
+                        local_date.isoformat(), {"done": [], "validation": []})
+                    day[kind].append(ref)
+        for day in linear_by_date.values():
+            for refs in day.values():
+                refs.sort(key=lambda r: r["identifier"])
+    else:
+        print("LINEAR_API_KEY not set; skipping Linear counts.")
+
+    def linear_count(day_iso, kind):
+        return len(linear_by_date.get(day_iso, {}).get(kind, []))
+
     # Build the Brazilian-holiday set across the years the range touches.
     years = list(range(range_start.year, range_end.year + 1))
     br_holidays = holidays_lib.Brazil(years=years)
@@ -173,50 +291,41 @@ def main():
             by_month[mk]["workDays"] += 1
         d += timedelta(days=1)
 
-    # PR counts per month.
-    pr_count_by_month = {}
-    for key, prs in prs_by_date.items():
-        mk = key[:7]
-        pr_count_by_month[mk] = pr_count_by_month.get(mk, 0) + len(prs)
-
     def per_work_day(total, work_days):
         return round(total / work_days, 2) if work_days else 0.0
 
     def window_stats(w_start, w_end):
-        work_days = 0
+        work_days = total = done = validation = 0
         d = w_start
         while d <= w_end:
+            key = d.isoformat()
             if is_work_day(d):
                 work_days += 1
+            total += len(prs_by_date.get(key, []))
+            done += linear_count(key, "done")
+            validation += linear_count(key, "validation")
             d += timedelta(days=1)
-        total = sum(
-            len(prs_by_date.get((w_start + timedelta(days=i)).isoformat(), []))
-            for i in range((w_end - w_start).days + 1)
-        )
         return {
             "totalPRs": total,
             "workDays": work_days,
             "prsPerWorkDay": per_work_day(total, work_days),
+            "linearDone": done,
+            "linearDonePerWorkDay": per_work_day(done, work_days),
+            "linearValidation": validation,
+            "linearValidationPerWorkDay": per_work_day(validation, work_days),
         }
 
-    total_prs = sum(len(v) for v in prs_by_date.values())
     stats = {
-        "overall": {
-            "totalPRs": total_prs,
-            "workDays": overall_work_days,
-            "prsPerWorkDay": per_work_day(total_prs, overall_work_days),
-        },
+        "overall": window_stats(range_start, range_end),
         "last7": window_stats(max(range_start, range_end - timedelta(days=6)), range_end),
         "last30": window_stats(max(range_start, range_end - timedelta(days=29)), range_end),
         "byMonth": {},
     }
-    for mk, info in by_month.items():
-        total = pr_count_by_month.get(mk, 0)
-        stats["byMonth"][mk] = {
-            "totalPRs": total,
-            "workDays": info["workDays"],
-            "prsPerWorkDay": per_work_day(total, info["workDays"]),
-        }
+    for mk in by_month:
+        m_start = date(int(mk[:4]), int(mk[5:]), 1)
+        m_end = min(range_end, add_months(m_start, 1) - timedelta(days=1))
+        stats["byMonth"][mk] = window_stats(m_start, m_end)
+    total_prs = stats["overall"]["totalPRs"]
 
     data = {
         "login": login,
@@ -225,6 +334,8 @@ def main():
         "rangeStart": range_start.isoformat(),
         "rangeEnd": range_end.isoformat(),
         "prsByDate": prs_by_date,
+        "linearEnabled": bool(linear_key),
+        "linearByDate": linear_by_date,
         "holidays": holidays_in_range,
         "vacations": {d: timeoff[d] for d in sorted(timeoff)},
         "stats": stats,
@@ -239,6 +350,11 @@ def main():
         f"work days = {stats['overall']['prsPerWorkDay']}/work day "
         f"({range_start} → {range_end}, login: {login or 'unknown'})."
     )
+    if linear_key:
+        o = stats["overall"]
+        print(f"Linear: {o['linearDone']} done ({o['linearDonePerWorkDay']}/work day), "
+              f"{o['linearValidation']} moved to validation "
+              f"({o['linearValidationPerWorkDay']}/work day).")
 
 
 if __name__ == "__main__":
