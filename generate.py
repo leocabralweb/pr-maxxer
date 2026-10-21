@@ -145,15 +145,15 @@ def main():
     for prs in prs_by_date.values():
         prs.sort(key=lambda p: p["number"])
 
-    # Build the US-holiday set across the years the range touches.
+    # Build the Brazilian-holiday set across the years the range touches.
     years = list(range(range_start.year, range_end.year + 1))
-    us_holidays = holidays_lib.UnitedStates(years=years)
+    br_holidays = holidays_lib.Brazil(years=years)
     holidays_in_range = {}
 
     def is_work_day(d):
         if d.weekday() >= 5:  # Sat/Sun
             return False
-        if d in us_holidays:
+        if d in br_holidays:
             return False
         if d.isoformat() in timeoff:
             return False
@@ -166,8 +166,8 @@ def main():
     while d <= range_end:
         mk = month_key(d)
         by_month.setdefault(mk, {"workDays": 0})
-        if d in us_holidays:
-            holidays_in_range[d.isoformat()] = us_holidays.get(d)
+        if d in br_holidays:
+            holidays_in_range[d.isoformat()] = br_holidays.get(d)
         if is_work_day(d):
             overall_work_days += 1
             by_month[mk]["workDays"] += 1

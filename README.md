@@ -70,7 +70,7 @@ Two sources feed the work-day count, both excluded just like holidays:
 
 ## How stats work
 
-- **Work days** = weekdays (Mon–Fri) minus US federal holidays (auto-computed via
+- **Work days** = weekdays (Mon–Fri) minus Brazilian national holidays (auto-computed via
   the `holidays` package) minus your time-off (`vacations` + `calendarOoo`).
 - **PRs per work day** = total merged PRs in the range ÷ number of work days.
   Weekend/holiday merges still count toward the numerator.
