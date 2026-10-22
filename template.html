@@ -50,6 +50,8 @@
   .stat .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
   .stat .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
 
+  .toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); margin: -12px 0 16px; cursor: pointer; }
+  .toggle input { accent-color: var(--validation); margin: 0; }
   .trend { margin-bottom: 28px; }
   .trend h2 { font-size: 15px; margin: 0 0 2px; }
   .trend .hint { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
@@ -187,6 +189,7 @@
 <div class="wrap">
   <h1>PR-Maxxer</h1>
   <div class="sub" id="subtitle"></div>
+  <label class="toggle linear-only"><input type="checkbox" id="validationToggle"> Show “moved to validation”</label>
 
   <div class="stats" id="stats"></div>
 
@@ -212,7 +215,7 @@
   <div class="legend">
     <div class="item"><span class="swatch sw-pr"></span> merged PRs (click day to view on GitHub)</div>
     <div class="item linear-only"><span class="swatch sw-done"></span> Linear done</div>
-    <div class="item linear-only"><span class="swatch sw-validation"></span> Linear moved to validation</div>
+    <div class="item linear-only validation-only"><span class="swatch sw-validation"></span> Linear moved to validation</div>
     <div class="item"><span class="swatch sw-weekend"></span> weekend</div>
     <div class="item"><span class="swatch sw-holiday"></span> holiday</div>
     <div class="item"><span class="swatch sw-vacation"></span> vacation</div>
@@ -278,6 +281,10 @@
     return (a.y * 12 + a.m) - (b.y * 12 + b.m);
   }
 
+  // "Moved to validation" is hidden unless toggled on; the choice is remembered per browser.
+  let showValidation = false;
+  try { showValidation = localStorage.getItem("showValidation") === "1"; } catch (e) {}
+
   const WINDOWS = [
     ["Last 7 days", DATA.stats.last7],
     ["Last 30 days", DATA.stats.last30],
@@ -300,7 +307,7 @@
         return statCard(w[0] + " · Linear done", w[1].linearDonePerWorkDay,
           w[1].linearDone + " issues · " + w[1].workDays + " work days");
       }).join("");
-      html += WINDOWS.map(function (w) {
+      if (showValidation) html += WINDOWS.map(function (w) {
         return statCard(w[0] + " · To validation", w[1].linearValidationPerWorkDay,
           w[1].linearValidation + " issues · " + w[1].workDays + " work days");
       }).join("");
@@ -308,14 +315,17 @@
     el.innerHTML = html;
   }
 
-  const SERIES = [
+  const ALL_SERIES = [
     { key: "prs", label: "PRs", color: "var(--green-3)" },
     { key: "done", label: "Linear done", color: "var(--done)", linear: true },
     // Dashed: it often tracks PRs exactly, so the solid line underneath must show through.
     { key: "validation", label: "To validation", color: "var(--validation)", linear: true, dash: "6 5" },
-  ].filter(function (s) { return !s.linear || DATA.linearEnabled; });
+  ];
 
   function renderTrend() {
+    const SERIES = ALL_SERIES.filter(function (s) {
+      return (!s.linear || DATA.linearEnabled) && (s.key !== "validation" || showValidation);
+    });
     const rows = DATA.stats.rolling7;
     const chart = document.getElementById("trendChart");
     if (!rows.length) { chart.textContent = "Not enough days in range yet."; return; }
@@ -461,7 +471,8 @@
       const dayIso = iso(d);
       const inRange = d >= rangeStart && d <= rangeEnd;
       const prs = DATA.prsByDate[dayIso] || [];
-      const linear = DATA.linearByDate[dayIso] || { done: [], validation: [] };
+      const dayLinear = DATA.linearByDate[dayIso] || { done: [], validation: [] };
+      const linear = { done: dayLinear.done, validation: showValidation ? dayLinear.validation : [] };
       const hasItems = prs.length || linear.done.length || linear.validation.length;
       const isWeekend = d.getDay() === 0 || d.getDay() === 6;
       const holidayName = DATA.holidays[dayIso];
@@ -534,8 +545,25 @@
     document.querySelectorAll(".linear-only").forEach(function (el) { el.remove(); });
   }
 
-  render();
-  renderTrend();
+  function applyValidation() {
+    document.querySelectorAll(".validation-only").forEach(function (el) {
+      el.style.display = showValidation ? "" : "none";
+    });
+    render();
+    renderTrend();
+  }
+
+  const toggle = document.getElementById("validationToggle");
+  if (toggle) {
+    toggle.checked = showValidation;
+    toggle.addEventListener("change", function () {
+      showValidation = toggle.checked;
+      try { localStorage.setItem("showValidation", showValidation ? "1" : "0"); } catch (e) {}
+      applyValidation();
+    });
+  }
+
+  applyValidation();
   window.addEventListener("resize", renderTrend);
 })();
 </script>
