@@ -325,6 +325,23 @@ def main():
         m_start = date(int(mk[:4]), int(mk[5:]), 1)
         m_end = min(range_end, add_months(m_start, 1) - timedelta(days=1))
         stats["byMonth"][mk] = window_stats(m_start, m_end)
+
+    # Daily series of the trailing 7-day window, starting once a full window fits in
+    # range. Rates are None when the window has no work days (rendered as a gap).
+    rolling7 = []
+    d = range_start + timedelta(days=6)
+    while d <= range_end:
+        w = window_stats(d - timedelta(days=6), d)
+        has_work = w["workDays"] > 0
+        rolling7.append({
+            "date": d.isoformat(),
+            "workDays": w["workDays"],
+            "prs": w["prsPerWorkDay"] if has_work else None,
+            "done": w["linearDonePerWorkDay"] if has_work else None,
+            "validation": w["linearValidationPerWorkDay"] if has_work else None,
+        })
+        d += timedelta(days=1)
+    stats["rolling7"] = rolling7
     total_prs = stats["overall"]["totalPRs"]
 
     data = {

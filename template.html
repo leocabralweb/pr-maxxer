@@ -20,7 +20,7 @@
     --holiday: #3d1d0e;
     --vacation: #2d2440;
     --done: #8957e5;
-    --validation: #d29922;
+    --validation: #bb8009;
   }
   * { box-sizing: border-box; }
   body {
@@ -49,6 +49,34 @@
   .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
   .stat .value { font-size: 26px; font-weight: 600; margin-top: 4px; }
   .stat .note { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
+  .trend { margin-bottom: 28px; }
+  .trend h2 { font-size: 15px; margin: 0 0 2px; }
+  .trend .hint { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .trend-legend { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  .trend-legend .key { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 6px; border-radius: 1px; }
+  .chart { position: relative; }
+  .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .chart .gridline { stroke: var(--border); stroke-width: 1; }
+  .chart .axis-label { fill: var(--muted); font-size: 11px; }
+  .chart .series { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+  .chart .end-label { font-size: 11px; fill: var(--text); }
+  .chart .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .chart .dot { stroke: var(--panel); stroke-width: 2; }
+  .chart-tip {
+    position: absolute; top: 0; pointer-events: none; display: none;
+    background: #000; border: 1px solid var(--border); border-radius: 6px;
+    padding: 8px 10px; font-size: 11px; white-space: nowrap;
+    box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  }
+  .chart-tip .row { display: flex; align-items: center; gap: 6px; }
+  .chart-tip .row b { margin-left: auto; padding-left: 12px; font-weight: 600; }
+  .chart-tip .sw { width: 8px; height: 8px; border-radius: 50%; }
+  .chart-tip .muted { color: var(--muted); margin-bottom: 4px; }
+  .trend details { margin-top: 8px; font-size: 12px; color: var(--muted); }
+  .trend table { border-collapse: collapse; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .trend th, .trend td { padding: 2px 12px 2px 0; text-align: right; }
+  .trend th:first-child, .trend td:first-child { text-align: left; }
 
   .cal-head {
     display: flex;
@@ -119,7 +147,7 @@
   .badges { margin-top: auto; display: flex; flex-wrap: wrap; gap: 3px; }
   .badges .badge { margin-top: 0; }
   .badge.done { background: var(--done); }
-  .badge.validation { background: var(--validation); color: #2b1d00; }
+  .badge.validation { background: var(--validation); color: #fff; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 18px; font-size: 12px; color: var(--muted); }
   .legend .item { display: flex; align-items: center; gap: 6px; }
@@ -161,6 +189,14 @@
   <div class="sub" id="subtitle"></div>
 
   <div class="stats" id="stats"></div>
+
+  <div class="trend">
+    <h2>Last 7 days, over time</h2>
+    <div class="hint">Per work day, trailing 7-day window ending on each date.</div>
+    <div class="trend-legend" id="trendLegend"></div>
+    <div class="chart" id="trendChart"></div>
+    <details><summary>Show as table</summary><div id="trendTable"></div></details>
+  </div>
 
   <div class="cal-head">
     <div class="month" id="monthLabel"></div>
@@ -270,6 +306,111 @@
       }).join("");
     }
     el.innerHTML = html;
+  }
+
+  const SERIES = [
+    { key: "prs", label: "PRs", color: "var(--green-3)" },
+    { key: "done", label: "Linear done", color: "var(--done)", linear: true },
+    { key: "validation", label: "To validation", color: "var(--validation)", linear: true },
+  ].filter(function (s) { return !s.linear || DATA.linearEnabled; });
+
+  function renderTrend() {
+    const rows = DATA.stats.rolling7;
+    const chart = document.getElementById("trendChart");
+    if (!rows.length) { chart.textContent = "Not enough days in range yet."; return; }
+
+    document.getElementById("trendLegend").innerHTML = SERIES.map(function (s) {
+      return '<span><span class="key" style="background:' + s.color + '"></span>' + s.label + "</span>";
+    }).join("");
+
+    const W = chart.clientWidth || 820, H = 220;
+    const M = { top: 10, right: 92, bottom: 22, left: 32 };
+    const iw = W - M.left - M.right, ih = H - M.top - M.bottom;
+    let max = 0;
+    rows.forEach(function (r) { SERIES.forEach(function (s) { if (r[s.key] > max) max = r[s.key]; }); });
+    const step = max <= 1 ? 0.25 : max <= 2 ? 0.5 : 1;
+    const yMax = Math.max(step, Math.ceil(max / step) * step);
+    const x = function (i) { return M.left + (rows.length === 1 ? iw / 2 : i * iw / (rows.length - 1)); };
+    const y = function (v) { return M.top + ih - v / yMax * ih; };
+
+    let svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Trailing 7-day rates per work day">';
+    for (let v = 0; v <= yMax + 1e-9; v += step) {
+      svg += '<line class="gridline" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + y(v) + '" y2="' + y(v) + '"/>';
+      svg += '<text class="axis-label" x="' + (M.left - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end">' + +v.toFixed(2) + "</text>";
+    }
+    // Month-start ticks on the x axis.
+    rows.forEach(function (r, i) {
+      if (r.date.slice(8) === "01" || i === 0) {
+        const d = parseDate(r.date);
+        svg += '<text class="axis-label" x="' + x(i) + '" y="' + (H - 4) + '" text-anchor="' + (i === 0 ? "start" : "middle") + '">' +
+          MONTH_NAMES[d.getMonth()].slice(0, 3) + " " + d.getDate() + "</text>";
+      }
+    });
+
+    // One path per series; null values (no work days in window) break the line.
+    const ends = [];
+    SERIES.forEach(function (s) {
+      let d = "", pen = false, last = null;
+      rows.forEach(function (r, i) {
+        const v = r[s.key];
+        if (v === null) { pen = false; return; }
+        d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1);
+        pen = true; last = { i: i, v: v };
+      });
+      svg += '<path class="series" d="' + d + '" style="stroke:' + s.color + '"/>';
+      if (last) ends.push({ s: s, y: y(last.v), v: last.v });
+    });
+    // Direct end labels, nudged apart so they don't collide.
+    ends.sort(function (a, b) { return a.y - b.y; });
+    for (let i = 1; i < ends.length; i++) {
+      if (ends[i].y - ends[i - 1].y < 13) ends[i].y = ends[i - 1].y + 13;
+    }
+    ends.forEach(function (e) {
+      svg += '<text class="end-label" x="' + (W - M.right + 6) + '" y="' + (e.y + 4) + '">' + e.s.label + " " + e.v + "</text>";
+    });
+    svg += '<g id="trendHover" style="display:none"><line class="crosshair" y1="' + M.top + '" y2="' + (M.top + ih) + '"/>' +
+      SERIES.map(function (s) { return '<circle class="dot" r="4" style="fill:' + s.color + '"/>'; }).join("") + "</g>";
+    svg += '<rect x="' + M.left + '" y="0" width="' + iw + '" height="' + H + '" fill="transparent" id="trendHit"/>';
+    svg += "</svg>";
+    chart.innerHTML = svg + '<div class="chart-tip" id="trendTip"></div>';
+
+    const hover = document.getElementById("trendHover");
+    const tip = document.getElementById("trendTip");
+    const svgEl = chart.querySelector("svg");
+    document.getElementById("trendHit").addEventListener("mousemove", function (ev) {
+      const rect = svgEl.getBoundingClientRect();
+      const px = (ev.clientX - rect.left) * W / rect.width;
+      const i = Math.max(0, Math.min(rows.length - 1,
+        Math.round((px - M.left) / iw * (rows.length - 1))));
+      const r = rows[i];
+      hover.style.display = "";
+      hover.querySelector("line").setAttribute("x1", x(i));
+      hover.querySelector("line").setAttribute("x2", x(i));
+      hover.querySelectorAll("circle").forEach(function (c, k) {
+        const v = r[SERIES[k].key];
+        c.style.display = v === null ? "none" : "";
+        if (v !== null) { c.setAttribute("cx", x(i)); c.setAttribute("cy", y(v)); }
+      });
+      tip.innerHTML = '<div class="muted">' + parseDate(r.date).toDateString().slice(4) + " · 7d ending · " +
+        r.workDays + " work days</div>" + SERIES.map(function (s) {
+          return '<div class="row"><span class="sw" style="background:' + s.color + '"></span>' + s.label +
+            "<b>" + (r[s.key] === null ? "—" : r[s.key]) + "</b></div>";
+        }).join("");
+      tip.style.display = "block";
+      const left = x(i) / W * rect.width;
+      tip.style.left = (left > rect.width / 2 ? left - tip.offsetWidth - 12 : left + 12) + "px";
+    });
+    document.getElementById("trendHit").addEventListener("mouseleave", function () {
+      hover.style.display = "none"; tip.style.display = "none";
+    });
+
+    document.getElementById("trendTable").innerHTML = "<table><tr><th>7d ending</th><th>Work days</th>" +
+      SERIES.map(function (s) { return "<th>" + s.label + "</th>"; }).join("") + "</tr>" +
+      rows.slice().reverse().map(function (r) {
+        return "<tr><td>" + r.date + "</td><td>" + r.workDays + "</td>" + SERIES.map(function (s) {
+          return "<td>" + (r[s.key] === null ? "—" : r[s.key]) + "</td>";
+        }).join("") + "</tr>";
+      }).join("") + "</table>";
   }
 
   function tooltipHtml(prs, linear) {
@@ -390,6 +531,8 @@
   }
 
   render();
+  renderTrend();
+  window.addEventListener("resize", renderTrend);
 })();
 </script>
 </body>
