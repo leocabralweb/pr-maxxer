@@ -11,6 +11,8 @@ GitHub search) plus PRs-merged-per-work-day stats.
 
 - [`gh`](https://cli.github.com/) CLI, authenticated — check with `gh auth status`
 - [`uv`](https://docs.astral.sh/uv/) — runs the script and handles Python deps for you
+- Optional: a Linear [personal API key](https://linear.app/settings/account/security) in
+  `LINEAR_API_KEY` to add Linear issue counts (skipped when unset)
 
 ## Usage
 
@@ -39,7 +41,8 @@ cp config.example.json config.json   # then edit username, etc.
   "monthsBack": 3,
   "timezone": "America/New_York",
   "vacations": [],
-  "calendarOoo": []
+  "calendarOoo": [],
+  "linear": { "validationState": "In Validation" }
 }
 ```
 
@@ -52,6 +55,9 @@ cp config.example.json config.json   # then edit username, etc.
   count (treated just like holidays). Add days here and re-run.
 - **calendarOoo** — list of `{ "date": "YYYY-MM-DD", "title": "..." }` entries, **managed
   by the Google Calendar sync** (see below). Don't hand-edit; a sync overwrites it.
+- **linear.validationState** — name of the workflow state that counts as "moved to
+  validation" (case-insensitive, default `In Validation`). The API key is read from the
+  `LINEAR_API_KEY` env var (or `linear.apiKey`, since `config.json` is gitignored).
 
 ## Vacation / out-of-office days
 
@@ -74,6 +80,10 @@ Two sources feed the work-day count, both excluded just like holidays:
   the `holidays` package) minus your time-off (`vacations` + `calendarOoo`).
 - **PRs per work day** = total merged PRs in the range ÷ number of work days.
   Weekend/holiday merges still count toward the numerator.
+- **Linear done / to validation** — two separate per-day counts of issues currently
+  assigned to you: *done* is bucketed by the issue's `completedAt`, *to validation* by
+  each transition into the `validationState`. An issue can count in both (e.g. moved to
+  validation Monday, done Wednesday). Each has its own per-work-day rate.
 
 ## Notes
 

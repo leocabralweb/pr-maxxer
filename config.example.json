@@ -3,5 +3,8 @@
   "monthsBack": 3,
   "timezone": "America/New_York",
   "vacations": [],
-  "calendarOoo": []
+  "calendarOoo": [],
+  "linear": {
+    "validationState": "In Validation"
+  }
 }
