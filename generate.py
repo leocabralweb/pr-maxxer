@@ -291,6 +291,9 @@ def main():
 
     today_local = datetime.now(tz).date()
     range_start = add_months(first_of_month(today_local), -(months_back - 1))
+    # Optional explicit start date overrides the monthsBack-derived first-of-month.
+    if config.get("startDate"):
+        range_start = date.fromisoformat(config["startDate"])
     range_end = today_local
 
     raw_prs = fetch_prs(range_start)
@@ -426,8 +429,8 @@ def main():
         "byMonth": {},
     }
     for mk in by_month:
-        m_start = date(int(mk[:4]), int(mk[5:]), 1)
-        m_end = min(range_end, add_months(m_start, 1) - timedelta(days=1))
+        m_start = max(range_start, date(int(mk[:4]), int(mk[5:]), 1))
+        m_end = min(range_end, add_months(first_of_month(m_start), 1) - timedelta(days=1))
         stats["byMonth"][mk] = window_stats(m_start, m_end)
 
     # Daily series of the trailing 7-day window, starting once a full window fits in

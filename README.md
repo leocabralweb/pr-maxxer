@@ -49,6 +49,8 @@ cp config.example.json config.json   # then edit username, etc.
 - **username** — GitHub login (used for the GitHub-search links). The script also
   auto-detects your login via `gh api user`, so the placeholder is usually fine.
 - **monthsBack** — how many calendar months back to include (and page across).
+- **startDate** — optional `YYYY-MM-DD`; when set, counting starts on this date instead
+  of the first day of the `monthsBack` window.
 - **timezone** — IANA tz name. Merge timestamps (UTC) are grouped by their local
   date in this zone, so day boundaries match your expectation.
 - **vacations** — hand-edited list of `YYYY-MM-DD` dates to exclude from the work-day
