@@ -21,6 +21,7 @@
     --vacation: #2d2440;
     --done: #8957e5;
     --validation: #bb8009;
+    --cost: #4493f8;
   }
   * { box-sizing: border-box; }
   body {
@@ -195,7 +196,7 @@
 
   <div class="trend">
     <h2>Last 7 days, over time</h2>
-    <div class="hint">Per work day, trailing 7-day window ending on each date.</div>
+    <div class="hint">Per work day, trailing 7-day window ending on each date. Claude $/PR uses the right axis.</div>
     <div class="trend-legend" id="trendLegend"></div>
     <div class="chart" id="trendChart"></div>
     <details><summary>Show as table</summary><div id="trendTable"></div></details>
@@ -312,6 +313,18 @@
           w[1].linearValidation + " issues · " + w[1].workDays + " work days");
       }).join("");
     }
+    if (DATA.claudeEnabled) {
+      html += WINDOWS.map(function (w) {
+        const s = w[1];
+        const usd = "$" + s.claudeCost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        let note = (s.claudeCostPerPR === null ? "no PRs" : "$" + s.claudeCostPerPR.toFixed(2) + "/PR") +
+          " · " + s.totalPRs + " PRs";
+        if (DATA.claudeCostSince > s.start) {
+          note += " · data since " + DATA.claudeCostSince.slice(8, 10) + "/" + DATA.claudeCostSince.slice(5, 7);
+        }
+        return statCard(w[0] + " · Claude $", usd, note);
+      }).join("");
+    }
     el.innerHTML = html;
   }
 
@@ -320,11 +333,26 @@
     { key: "done", label: "Linear done", color: "var(--done)", linear: true },
     // Dashed: it often tracks PRs exactly, so the solid line underneath must show through.
     { key: "validation", label: "To validation", color: "var(--validation)", linear: true, dash: "6 5" },
+    { key: "costPerPR", label: "Claude $/PR", color: "var(--cost)", claude: true, right: true },
   ];
+
+  function fmtSeries(s, v) {
+    if (v === null || v === undefined) return "—";
+    return s.right ? "$" + v.toFixed(2) : v;
+  }
+
+  // Smallest 1/2/5 x 10^k step that is >= raw.
+  function niceStep(raw) {
+    if (raw <= 0) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const m = raw / p;
+    return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 5 ? 5 : 10) * p;
+  }
 
   function renderTrend() {
     const SERIES = ALL_SERIES.filter(function (s) {
-      return (!s.linear || DATA.linearEnabled) && (s.key !== "validation" || showValidation);
+      return (!s.linear || DATA.linearEnabled) && (!s.claude || DATA.claudeEnabled) &&
+        (s.key !== "validation" || showValidation);
     });
     const rows = DATA.stats.rolling7;
     const chart = document.getElementById("trendChart");
@@ -337,19 +365,40 @@
     }).join("");
 
     const W = chart.clientWidth || 820, H = 220;
-    const M = { top: 10, right: 92, bottom: 22, left: 32 };
+    const hasRight = SERIES.some(function (s) { return s.right; });
+    const M = { top: 10, right: hasRight ? 150 : 92, bottom: 22, left: 32 };
     const iw = W - M.left - M.right, ih = H - M.top - M.bottom;
     let max = 0;
-    rows.forEach(function (r) { SERIES.forEach(function (s) { if (r[s.key] > max) max = r[s.key]; }); });
+    let maxR = 0;
+    rows.forEach(function (r) {
+      SERIES.forEach(function (s) {
+        const v = r[s.key];
+        if (s.right) { if (v > maxR) maxR = v; } else if (v > max) max = v;
+      });
+    });
     const step = max <= 1 ? 0.25 : max <= 2 ? 0.5 : 1;
     const yMax = Math.max(step, Math.ceil(max / step) * step);
+    // The right axis reuses the left gridlines: same number of divisions.
+    const divisions = Math.round(yMax / step);
+    const stepR = niceStep(maxR / divisions);
+    const yMaxR = stepR * divisions;
     const x = function (i) { return M.left + (rows.length === 1 ? iw / 2 : i * iw / (rows.length - 1)); };
-    const y = function (v) { return M.top + ih - v / yMax * ih; };
+    const yL = function (v) { return M.top + ih - v / yMax * ih; };
+    const yR = function (v) { return M.top + ih - v / yMaxR * ih; };
+    const y = yL;
+    const ys = function (s, v) { return s.right ? yR(v) : yL(v); };
+    const labelX = W - M.right + (hasRight ? 48 : 6);
 
     let svg = '<svg viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="Trailing 7-day rates per work day">';
     for (let v = 0; v <= yMax + 1e-9; v += step) {
       svg += '<line class="gridline" x1="' + M.left + '" x2="' + (W - M.right) + '" y1="' + y(v) + '" y2="' + y(v) + '"/>';
       svg += '<text class="axis-label" x="' + (M.left - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end">' + +v.toFixed(2) + "</text>";
+    }
+    if (hasRight) {
+      for (let k = 0; k <= divisions; k++) {
+        svg += '<text class="axis-label" x="' + (W - M.right + 6) + '" y="' + (yR(k * stepR) + 4) + '" style="fill:var(--cost)">$' +
+          +(k * stepR).toFixed(2) + "</text>";
+      }
     }
     // Month-start ticks on the x axis.
     rows.forEach(function (r, i) {
@@ -367,12 +416,12 @@
       rows.forEach(function (r, i) {
         const v = r[s.key];
         if (v === null) { pen = false; return; }
-        d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + y(v).toFixed(1);
+        d += (pen ? "L" : "M") + x(i).toFixed(1) + "," + ys(s, v).toFixed(1);
         pen = true; last = { i: i, v: v };
       });
       svg += '<path class="series" d="' + d + '" style="stroke:' + s.color + '"' +
         (s.dash ? ' stroke-dasharray="' + s.dash + '" stroke-linecap="butt"' : "") + "/>";
-      if (last) ends.push({ s: s, y: y(last.v), v: last.v });
+      if (last) ends.push({ s: s, y: ys(s, last.v), v: last.v });
     });
     // Direct end labels, nudged apart so they don't collide.
     ends.sort(function (a, b) { return a.y - b.y; });
@@ -380,7 +429,7 @@
       if (ends[i].y - ends[i - 1].y < 13) ends[i].y = ends[i - 1].y + 13;
     }
     ends.forEach(function (e) {
-      svg += '<text class="end-label" x="' + (W - M.right + 6) + '" y="' + (e.y + 4) + '">' + e.s.label + " " + e.v + "</text>";
+      svg += '<text class="end-label" x="' + labelX + '" y="' + (e.y + 4) + '">' + e.s.label + " " + fmtSeries(e.s, e.v) + "</text>";
     });
     svg += '<g id="trendHover" style="display:none"><line class="crosshair" y1="' + M.top + '" y2="' + (M.top + ih) + '"/>' +
       SERIES.map(function (s) { return '<circle class="dot" r="4" style="fill:' + s.color + '"/>'; }).join("") + "</g>";
@@ -403,12 +452,12 @@
       hover.querySelectorAll("circle").forEach(function (c, k) {
         const v = r[SERIES[k].key];
         c.style.display = v === null ? "none" : "";
-        if (v !== null) { c.setAttribute("cx", x(i)); c.setAttribute("cy", y(v)); }
+        if (v !== null) { c.setAttribute("cx", x(i)); c.setAttribute("cy", ys(SERIES[k], v)); }
       });
       tip.innerHTML = '<div class="muted">' + parseDate(r.date).toDateString().slice(4) + " · 7d ending · " +
         r.workDays + " work days</div>" + SERIES.map(function (s) {
           return '<div class="row"><span class="sw" style="background:' + s.color + '"></span>' + s.label +
-            "<b>" + (r[s.key] === null ? "—" : r[s.key]) + "</b></div>";
+            "<b>" + fmtSeries(s, r[s.key]) + "</b></div>";
         }).join("");
       tip.style.display = "block";
       const left = x(i) / W * rect.width;
@@ -422,7 +471,7 @@
       SERIES.map(function (s) { return "<th>" + s.label + "</th>"; }).join("") + "</tr>" +
       rows.slice().reverse().map(function (r) {
         return "<tr><td>" + r.date + "</td><td>" + r.workDays + "</td>" + SERIES.map(function (s) {
-          return "<td>" + (r[s.key] === null ? "—" : r[s.key]) + "</td>";
+          return "<td>" + fmtSeries(s, r[s.key]) + "</td>";
         }).join("") + "</tr>";
       }).join("") + "</table>";
   }

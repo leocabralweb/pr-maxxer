@@ -44,6 +44,25 @@ EXAMPLE_CONFIG_PATH = HERE / "config.example.json"
 TEMPLATE_PATH = HERE / "template.html"
 OUTPUT_PATH = HERE / "index.html"
 LINEAR_API_URL = "https://api.linear.app/graphql"
+CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+CLAUDE_COST_CACHE = HERE / "claude-cost.json"
+
+# Claude list prices in $ per million tokens:
+# (input, output, cache write 5m, cache write 1h, cache read).
+# Matched by longest model-id prefix. Fast mode bills 2x.
+CLAUDE_PRICES = {
+    "claude-fable-5-2": (8, 40, 10, 16, 0.20),
+    "claude-fable-5-1": (10, 50, 12.5, 20, 0.25),
+    "claude-fable-5": (10, 50, 12.5, 20, 1.0),
+    "claude-opus-5-5": (4, 20, 5, 8, 0.20),
+    "claude-opus-5": (5, 25, 6.25, 10, 0.5),
+    "claude-opus-4": (5, 25, 6.25, 10, 0.5),
+    "claude-sonnet-5-5": (2, 10, 2.5, 4, 0.10),
+    "claude-sonnet-5": (2, 10, 2.5, 4, 0.2),
+    "claude-sonnet-4": (3, 15, 3.75, 6, 0.3),
+    "claude-haiku-5-5": (0.1, 0.5, 0.125, 0.2, 0.01),
+    "claude-haiku-4": (1, 5, 1.25, 2, 0.1),
+}
 
 
 def run(cmd):
@@ -173,6 +192,83 @@ def fetch_linear_issues(api_key, range_start):
         after = conn["pageInfo"]["endCursor"]
 
 
+def claude_price(model):
+    for prefix in sorted(CLAUDE_PRICES, key=len, reverse=True):
+        if model.startswith(prefix):
+            return CLAUDE_PRICES[prefix]
+    return None
+
+
+def compute_claude_cost_by_date(tz):
+    """Estimate Claude Code spend per local date from ~/.claude/projects transcripts.
+
+    Cost = tokens x list price. Claude Code writes one transcript line per content
+    block, so messages are deduped on (message id, request id).
+    """
+    seen = set()
+    by_date = {}
+    unknown = {}
+    if not CLAUDE_PROJECTS_DIR.is_dir():
+        return by_date
+    for path in CLAUDE_PROJECTS_DIR.rglob("*.jsonl"):
+        with path.open(errors="ignore") as f:
+            for line in f:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                msg = entry.get("message") or {}
+                usage, model = msg.get("usage"), msg.get("model")
+                if not isinstance(usage, dict) or not model or model == "<synthetic>":
+                    continue
+                key = (msg.get("id"), entry.get("requestId"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                price = claude_price(model)
+                if not price:
+                    unknown[model] = unknown.get(model, 0) + 1
+                    continue
+                breakdown = usage.get("cache_creation") or {}
+                write_1h = breakdown.get("ephemeral_1h_input_tokens", 0)
+                write_5m = breakdown.get(
+                    "ephemeral_5m_input_tokens",
+                    usage.get("cache_creation_input_tokens", 0) - write_1h)
+                cost = (usage.get("input_tokens", 0) * price[0]
+                        + usage.get("output_tokens", 0) * price[1]
+                        + write_5m * price[2]
+                        + write_1h * price[3]
+                        + usage.get("cache_read_input_tokens", 0) * price[4]) / 1e6
+                if usage.get("speed") == "fast":
+                    cost *= 2
+                ts = entry.get("timestamp")
+                if not ts:
+                    continue
+                day = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(tz).date()
+                by_date[day.isoformat()] = by_date.get(day.isoformat(), 0.0) + cost
+    if unknown:
+        print(f"Claude: no price for {unknown}; those messages are not counted.")
+    return by_date
+
+
+def load_claude_cost_by_date(tz):
+    """Merge freshly computed daily costs into the on-disk cache and return it.
+
+    Transcripts are deleted after ~30 days, so days that no longer have transcripts
+    keep their cached value; days that do are recomputed.
+    """
+    cached = {}
+    if CLAUDE_COST_CACHE.exists():
+        cached = json.loads(CLAUDE_COST_CACHE.read_text())
+    cached.update({d: round(c, 4) for d, c in compute_claude_cost_by_date(tz).items()})
+    merged = dict(sorted(cached.items()))
+    if merged:
+        CLAUDE_COST_CACHE.write_text(json.dumps(merged, indent=2) + "\n")
+    return merged
+
+
 def main():
     # config.json is gitignored (it holds personal vacation/OOO data). On a fresh
     # checkout, seed it from the committed starter so the script runs out of the box.
@@ -260,6 +356,9 @@ def main():
     else:
         print("LINEAR_API_KEY not set; skipping Linear counts.")
 
+    claude_cost_by_date = load_claude_cost_by_date(tz)
+    claude_since = min(claude_cost_by_date) if claude_cost_by_date else None
+
     def linear_count(day_iso, kind):
         return len(linear_by_date.get(day_iso, {}).get(kind, []))
 
@@ -296,6 +395,7 @@ def main():
 
     def window_stats(w_start, w_end):
         work_days = total = done = validation = 0
+        claude_cost = 0.0
         d = w_start
         while d <= w_end:
             key = d.isoformat()
@@ -304,8 +404,10 @@ def main():
             total += len(prs_by_date.get(key, []))
             done += linear_count(key, "done")
             validation += linear_count(key, "validation")
+            claude_cost += claude_cost_by_date.get(key, 0.0)
             d += timedelta(days=1)
         return {
+            "start": w_start.isoformat(),
             "totalPRs": total,
             "workDays": work_days,
             "prsPerWorkDay": per_work_day(total, work_days),
@@ -313,6 +415,8 @@ def main():
             "linearDonePerWorkDay": per_work_day(done, work_days),
             "linearValidation": validation,
             "linearValidationPerWorkDay": per_work_day(validation, work_days),
+            "claudeCost": round(claude_cost, 2),
+            "claudeCostPerPR": round(claude_cost / total, 2) if total else None,
         }
 
     stats = {
@@ -333,12 +437,16 @@ def main():
     while d <= range_end:
         w = window_stats(d - timedelta(days=6), d)
         has_work = w["workDays"] > 0
+        # $/PR only when the cost data covers the whole window, so a partial
+        # window doesn't plot an artificially low value.
+        cost_covered = claude_since is not None and w["start"] >= claude_since
         rolling7.append({
             "date": d.isoformat(),
             "workDays": w["workDays"],
             "prs": w["prsPerWorkDay"] if has_work else None,
             "done": w["linearDonePerWorkDay"] if has_work else None,
             "validation": w["linearValidationPerWorkDay"] if has_work else None,
+            "costPerPR": w["claudeCostPerPR"] if cost_covered else None,
         })
         d += timedelta(days=1)
     stats["rolling7"] = rolling7
@@ -353,6 +461,8 @@ def main():
         "prsByDate": prs_by_date,
         "linearEnabled": bool(linear_key),
         "linearByDate": linear_by_date,
+        "claudeEnabled": bool(claude_cost_by_date),
+        "claudeCostSince": claude_since,
         "holidays": holidays_in_range,
         "vacations": {d: timeoff[d] for d in sorted(timeoff)},
         "stats": stats,
@@ -372,6 +482,10 @@ def main():
         print(f"Linear: {o['linearDone']} done ({o['linearDonePerWorkDay']}/work day), "
               f"{o['linearValidation']} moved to validation "
               f"({o['linearValidationPerWorkDay']}/work day).")
+    if claude_cost_by_date:
+        o = stats["overall"]
+        per_pr = f"${o['claudeCostPerPR']:.2f}/PR" if o["claudeCostPerPR"] is not None else "no PRs"
+        print(f"Claude: ${o['claudeCost']:,.2f} ({per_pr}), data since {claude_since}.")
 
 
 if __name__ == "__main__":

@@ -86,6 +86,7 @@ cd "${CLAUDE_PROJECT_DIR:-.}" && uv run generate.py
 
 Summarize for the user:
 - OOO days synced (count + dates), and the new total/per-month PRs-per-work-day.
+- The Claude spend line from the script output (total $ and $/PR).
 - Flag any synced event that looks like a working day rather than time off (e.g. an
   "Offsite" / "Summit" titled OOO block) so they can decide whether to keep it — they can
   remove it by hand from `config.calendarOoo` and re-run, or just tell you to drop it.

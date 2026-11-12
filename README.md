@@ -85,6 +85,21 @@ Two sources feed the work-day count, both excluded just like holidays:
   each transition into the `validationState`. An issue can count in both (e.g. moved to
   validation Monday, done Wednesday). Each has its own per-work-day rate.
 
+## Claude spend
+
+The dashboard also shows how much you spent on Claude in each window (total $ and $/PR).
+The cost is an estimate: `generate.py` reads Claude Code's local transcripts
+(`~/.claude/projects/**/*.jsonl`), takes each message's token counts (input, output, cache
+writes, cache reads) and multiplies them by the model's list price (`CLAUDE_PRICES`).
+
+- It counts only Claude Code on this machine. claude.ai chat and other machines are not
+  included. In a November test it came out about 5% below the desktop app's usage tab.
+- Claude Code deletes transcripts after 30 days, so each run saves the daily totals to
+  `claude-cost.json` (gitignored). Days that still have transcripts are recomputed and older
+  days keep their saved value, so history builds up over time. To keep more raw history, set
+  `"cleanupPeriodDays": 365` in `~/.claude/settings.json`.
+- When the saved data starts after a window's start date, the card says "data since DD/MM".
+
 ## Notes
 
 - The output `index.html` is fully self-contained (data + JS embedded) — open it
